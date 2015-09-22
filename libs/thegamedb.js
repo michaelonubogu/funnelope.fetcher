@@ -18,7 +18,7 @@ var gamesdb = {
                 timeout : 1800000
             }
             
-            console.log('calling GamesDB.net - GetPlatformGames');
+            console.log('calling GamesDB.net - GetPlatformGames for: ' + platformid);
             return rp(options);
         }
     },

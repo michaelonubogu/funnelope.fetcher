@@ -15,7 +15,7 @@ var _ = require('underscore');
 var parseXML = require('xml2js').parseString;
 
 var RateLimiter = require('limiter').RateLimiter;
-var limiter = new RateLimiter(1, 250);
+var limiter = new RateLimiter(1, 1000);
 var gameDB = require('./libs/thegamedb');
 var config = require('./libs/config');
 var platforms = [];
@@ -43,6 +43,7 @@ var popularSystemShortNames = {
 }
 
 var lastpositionacquired = false;
+var platforms = [];
 
 gameDB.getGamesPlatformList().then(function (data) {
 
@@ -69,103 +70,146 @@ gameDB.getGamesPlatformList().then(function (data) {
                         platform.id = idArray !== null && idArray !== undefined && idArray.length > 0 ? idArray[0] : '';
                         platform.name = nameArray !== null && nameArray !== undefined && nameArray.length > 0 ? nameArray[0] : '';
                         
-                        //check to see if we stopped at the current platform when retrieving the list of games
-                        var lastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
-                        var lastStoppedProof = new Fireproof(lastStoppedRef);
-                        
-                        lastStoppedProof.once('value', function (laststoppedSnap) {
-                            var laststopped = laststoppedSnap.val();
+                        platforms.push(platform);
+                    })
+                }
+            });
 
-                            if (lastpositionacquired === true || laststoppedSnap == null || laststoppedSnap == undefined || (laststoppedSnap !== null && laststoppedSnap !== undefined && laststoppedSnap.platformid === platform.id)) {
-                                //Mark that we have acquired our last position
-                                lastpositionacquired = true;
+            //for (i = 0; i < platforms.length - 1; i++) {
+                
+            //    if (platforms[i].id === '7') {
+            //        break;
+            //    }
+                
+            //    var lastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
+            //    var lastStoppedProof = new Fireproof(lastStoppedRef);
+                
+            //    lastStoppedProof.push({ platformid: platforms[i].id });
+            //    console.log('added platform: ' + platforms[i].name);
 
-                                var newlastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
-                                var newlastStoppedProof = new Fireproof(newlastStoppedRef);
-                                newlastStoppedProof.set({ platformid: platform.id });
+            //}
 
-                                //continue with retrieval
-                                var delayedFunction = function () {
-                                    gameDB.getGamesByPlatform(platform.id).then(function (gamesData) {
+            _.each(platforms, function (platform, platformindex) {
+                
+                //Save the index of the id of the last platform - that we have completed
+                var oldlastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
+                var oldlastStoppedProof = new Fireproof(oldlastStoppedRef);
+                
+                if (platformindex > 0) {
+                    oldlastStoppedRef
+                    .orderByChild('platformid')
+                    .equalTo(platforms[platformindex - 1].id)
+                    .once('value', function (oldlaststoppedSnap) {
+                        oldlaststopped = oldlaststoppedSnap.val();
+
+                        if (oldlaststopped == null && oldlaststopped == undefined) {
+                            var newoldlastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
+                            var newoldlastStoppedProof = new Fireproof(newoldlastStoppedRef);
+                            newoldlastStoppedProof.push({ platformid: platforms[platformindex - 1].id });
+                        }
+
+                    });
+                }
+
+
+
+                //check to see if we stopped at the current platform when retrieving the list of games
+                var lastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
+                var lastStoppedProof = new Fireproof(lastStoppedRef);
+                
+                lastStoppedProof
+                .orderByChild('platformid')
+                .equalTo(platform.id.toString())
+                .once('value', function (laststoppedSnap) {
+                    
+                    var laststopped = laststoppedSnap.val();
+                    
+                    if (laststopped == null || laststopped == undefined) {
+                        console.log('processing: ' + platform.name);
+
+                        //continue with retrieval
+                        var delayedFunction = function () {
+                            gameDB.getGamesByPlatform(platform.id).then(function (gamesData) {
+                                
+                                var childOptions = {
+                                    tagNameProcessors: [removeColon],
+                                    ignoreAttrs : false
+                                }
+                                
+                                parseXML(gamesData, childOptions, function (err, parsedGameResult) {
+                                    if (parsedGameResult.Data !== null && parsedGameResult.Data !== undefined && parsedGameResult.Data.Game !== null && parsedGameResult.Data.Game !== undefined && parsedGameResult.Data.Game.length > 0) {
                                         
-                                        var childOptions = {
-                                            tagNameProcessors: [removeColon],
-                                            ignoreAttrs : false
-                                        }
-                                        
-                                        parseXML(gamesData, childOptions, function (err, parsedGameResult) {
-                                            if (parsedGameResult.Data !== null && parsedGameResult.Data !== undefined && parsedGameResult.Data.Game !== null && parsedGameResult.Data.Game !== undefined && parsedGameResult.Data.Game.length > 0) {
+                                        _.each(parsedGameResult.Data.Game, function (gameArray, gameArrayIndex) {
+                                            var gameTitle = gameArray.GameTitle !== null && gameArray.GameTitle !== undefined && gameArray.GameTitle.length > 0 ? gameArray.GameTitle[0] : null;
+                                            var id = gameArray.id !== null && gameArray.id !== undefined && gameArray.id.length > 0 ? gameArray.id[0] : null;
+                                            
+                                            //Check firebase for our game (by gamedbid) make sure it doesnt exist already
+                                            if (gameTitle !== null && gameTitle !== undefined && gameTitle !== '' && id !== null && id !== undefined && id !== '') {
                                                 
-                                                _.each(parsedGameResult.Data.Game, function (gameArray, gameArrayIndex) {
-                                                    var gameTitle = gameArray.GameTitle !== null && gameArray.GameTitle !== undefined && gameArray.GameTitle.length > 0 ? gameArray.GameTitle[0] : null;
-                                                    var id = gameArray.id !== null && gameArray.id !== undefined && gameArray.id.length > 0 ? gameArray.id[0] : null;
+                                                //Temporary - If we are using firebase
+                                                if (config.useFirebase) {
+                                                    var gamesRefs = new Firebase(config.firebase.url + config.firebase.endpoints.games);
+                                                    var gamesProof = new Fireproof(gamesRefs);
                                                     
-                                                    //Check firebase for our game (by gamedbid) make sure it doesnt exist already
-                                                    if (gameTitle !== null && gameTitle !== undefined && gameTitle !== '' && id !== null && id !== undefined && id !== '') {
-                                                        
-                                                        //Temporary - If we are using firebase
-                                                        if (config.useFirebase) {
-                                                            var gamesRefs = new Firebase(config.firebase.url + config.firebase.endpoints.games);
-                                                            var gamesProof = new Fireproof(gamesRefs);
-                                                            
-                                                            gamesProof
+                                                    gamesProof
                                                             .orderByChild('gamedbid')
                                                             .equalTo(id)
                                                             .once('value')
                                                             .then(function (snapshot) {
-                                                                var result = snapshot.val();
-                                                                if (result) {
-                                                                    //check to see if it has search indexes. if it doesn't, add indexes for it
-                                                                    if (!result.systemgameindex) {
-                                                                        //save the system game index
-                                                                        var gameRef = new Firebase(config.firebase.url + config.firebase.endpoints.games + '/' + snapshot.key() + '/systemgameindex');
-                                                                        var systemgameindex = result.gamedbsystemalias + result.title;
-                                                                        gameRef.set(systemgameindex);
-                                                                        console.log('Updated game: ' + result.title + ' | system: ' + result.gamedbsystemname);
-                                                                    }
-                                                                }
-                                                                else {
-                                                                    //Save this record for it's system/platform 
-                                                                    var newGame = {
-                                                                        gamedbid: id,
-                                                                        title: gameTitle,
-                                                                        gamedbsystemid : platform.id,
-                                                                        gamedbsystemalias : platform.alias,
-                                                                        gamedbsystemname: platform.name,
-                                                                        systemgameindex: platform.alias + gameTitle
-                                                                    }
-                                                                    
-                                                                    var newGamesRef = new Firebase(config.firebase.url + config.firebase.endpoints.games);
-                                                                    var newGamesProof = new Fireproof(newGamesRef);
-                                                                    
-                                                                    newGamesProof.push(newGame);
-                                                                    console.log('saved game: ' + gameTitle + ' | system: ' + platform.name);
-                                                                    
-                                                                    if ((platforms.length - 1) === platformindex && (gameArrayIndex.length - 1) === gameArrayIndex) {
-                                                                        var removelastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
-                                                                        var removelastStoppedProof = new Fireproof(removelastStoppedRef);
-                                                                        removelastStoppedProof.remove();
-
-                                                                        console.log('--------------------fetcher has finished---------------------');
-                                                                    }
-                                                                }
-                                                            });
+                                                        var result = snapshot.val();
+                                                        if (result) {
+                                                            //check to see if it has search indexes. if it doesn't, add indexes for it
+                                                            if (!result.systemgameindex) {
+                                                                //save the system game index
+                                                                var gameRef = new Firebase(config.firebase.url + config.firebase.endpoints.games + '/' + snapshot.key() + '/systemgameindex');
+                                                                var systemgameindex = result.gamedbsystemalias + result.title;
+                                                                gameRef.set(systemgameindex);
+                                                                console.log('Updated game: ' + result.title + ' | system: ' + result.gamedbsystemname);
+                                                            }
                                                         }
-                                                    }
-                                                })
+                                                        else {
+                                                            //Save this record for it's system/platform 
+                                                            var newGame = {
+                                                                gamedbid: id,
+                                                                title: gameTitle,
+                                                                gamedbsystemid : platform.id,
+                                                                gamedbsystemalias : platform.alias,
+                                                                gamedbsystemname: platform.name,
+                                                                systemgameindex: platform.alias + gameTitle
+                                                            }
+                                                            
+                                                            var newGamesRef = new Firebase(config.firebase.url + config.firebase.endpoints.games);
+                                                            var newGamesProof = new Fireproof(newGamesRef);
+                                                            
+                                                            newGamesProof.push(newGame);
+                                                            console.log('saved game: ' + gameTitle + ' | system: ' + platform.name);
+                                                            
+                                                            if ((platforms.length - 1) === platformindex && (gameArrayIndex.length - 1) === gameArrayIndex) {
+                                                                var removelastStoppedRef = new Firebase(config.firebase.url + config.firebase.endpoints.laststopped);
+                                                                var removelastStoppedProof = new Fireproof(removelastStoppedRef);
+                                                                removelastStoppedProof.remove();                                                
+                                                                console.log('--------------------fetcher has finished---------------------');
+                                                            }
+                                                        }
+                                                    });
+                                                }
                                             }
-                                        });
-                                    });
-                                }
-
-                                limiter.removeTokens(1, function () {
-                                    delayedFunction();
+                                        })
+                                    }
                                 });
-                            }
+                            });
+                        }
+                        
+                        limiter.removeTokens(1, function () {
+                            delayedFunction();
                         });
-                    })
-                }
+                    }
+                });
+
             });
         }
     });
 });
+
+
+
